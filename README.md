@@ -1,2 +1,2 @@
 # youtube-Downloader
-Youtube mp3 and mp4 video downloader using python 
+YouTube MP4 downloader that allows you to create Shorts based on automatically generated subtitles.
