@@ -1,0 +1,6 @@
+yt-dlp                  # Para baixar vídeos e legendas do YouTube
+sentence-transformers   # Para gerar embeddings dos textos das legendas
+scikit-learn            # Para fazer clustering com KMeans
+numpy                   # Para manipulação de arrays numéricos
+moviepy                 # (opcional) Para estimar duração do vídeo
+ffmpeg-python           # (opcional) Para controle do FFmpeg via Python, se desejar
