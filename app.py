@@ -88,6 +88,11 @@ def _seconds_to_srt_time(sec_float):
     ms = rem % 1000
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
+def salvar_legenda(caminho_saida, legendas):
+    with open(caminho_saida, 'w', encoding='utf-8') as f:
+        for idx, (inicio, fim, texto) in enumerate(legendas, start=1):
+            f.write(f"{idx}\n{inicio} --> {fim}\n{texto}\n\n")
+
 # ============ NOVO: limpeza de sobreposições ============
 def limpar_sobreposicoes_srt(segmentos, margem_segundos=0.05):
     """
@@ -119,9 +124,7 @@ def limpar_arquivo_srt(caminho_srt, margem_segundos=0.05):
         if not segmentos:
             return False
         limpos = limpar_sobreposicoes_srt(segmentos, margem_segundos=margem_segundos)
-        with open(caminho_srt, 'w', encoding='utf-8') as f:
-            for idx, (inicio, fim, texto) in enumerate(limpos, start=1):
-                f.write(f"{idx}\n{inicio} --> {fim}\n{texto}\n\n")
+        salvar_legenda(caminho_srt, limpos)
         return True
     except Exception:
         return False
@@ -292,11 +295,16 @@ def sanitizar_nome_arquivo(nome):
     
     return nome if nome else "sem_nome"
 
-def cortar_video(video_path, cortes, pasta_saida, descricoes=None):
-    """
-    Corta o vídeo baseado nos timestamps fornecidos.
-    Agora SEM anexar legendas diretamente no vídeo.
-    """
+def filtrar_legendas_por_tempo(segmentos, tempo_inicio, tempo_fim):
+    inicio_sec = timestamp_to_seconds(tempo_inicio)
+    fim_sec = timestamp_to_seconds(tempo_fim)
+    return [ (i, f, txt) for (i, f, txt) in segmentos if inicio_sec <= str_time_to_seconds(i) < fim_sec ]
+
+def cortar_video(video_path, cortes, legenda_path, pasta_saida, descricoes=None):
+    # Lê e (por segurança) limpa novamente as legendas antes de usar
+    segmentos = parse_srt(legenda_path)
+    segmentos = limpar_sobreposicoes_srt(segmentos, margem_segundos=0.05)
+
     for i in range(len(cortes) - 1):
         inicio = cortes[i]
         fim = cortes[i + 1]
@@ -308,12 +316,32 @@ def cortar_video(video_path, cortes, pasta_saida, descricoes=None):
             nome_base = f"corte_{i+1:02d}"
             
         video_saida = os.path.join(pasta_saida, nome_base + ".mp4")
+        srt_saida = os.path.join(pasta_saida, nome_base + ".srt")
 
         inicio_sec = timestamp_to_seconds(inicio)
         fim_sec = timestamp_to_seconds(fim)
         duracao = fim_sec - inicio_sec
 
-        # Aplica o corte com fade in/out, MAS SEM legendas hardcoded
+        legendas_corte = filtrar_legendas_por_tempo(segmentos, inicio, fim)
+
+        legendas_ajustadas = []
+        for leg_inicio, leg_fim, texto in legendas_corte:
+            leg_inicio_sec = str_time_to_seconds(leg_inicio) - inicio_sec
+            leg_fim_sec = str_time_to_seconds(leg_fim) - inicio_sec
+
+            if leg_inicio_sec < 0:
+                leg_inicio_sec = 0
+            if leg_fim_sec < 0:
+                continue
+
+            novo_inicio = _seconds_to_srt_time(leg_inicio_sec)
+            novo_fim = _seconds_to_srt_time(leg_fim_sec)
+
+            legendas_ajustadas.append((novo_inicio, novo_fim, texto))
+
+        salvar_legenda(srt_saida, legendas_ajustadas)
+
+        # Aplica o corte com fade in/out e hardcode da legenda no corte
         subprocess.run([
             'ffmpeg', '-y',
             '-ss', inicio.replace(',', '.'),
@@ -321,13 +349,17 @@ def cortar_video(video_path, cortes, pasta_saida, descricoes=None):
             '-i', video_path,
             '-vf', (
                 f"fade=in:0:60,"
-                f"fade=out:st={duracao-3}:d=90"
+                f"fade=out:st={duracao-3}:d=90,"
+                f"subtitles='{srt_saida}':force_style="
+                "'FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF&,"
+                "OutlineColour=&H000000&,BorderStyle=1,Outline=1'"
             ),
             '-c:v', 'h264_nvenc',
             '-preset', 'slow',
             '-crf', '18',
             '-c:a', 'aac',
             '-b:a', '256k',
+            '-sn',
             video_saida
         ])
 
@@ -335,7 +367,7 @@ def cortar_video(video_path, cortes, pasta_saida, descricoes=None):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("YouTube Cutter IA - Sem Legendas Anexadas")
+        self.root.title("YouTube Cutter IA")
         self.root.geometry("700x600")
         
         # Variáveis
@@ -402,7 +434,7 @@ class App:
         srt_frame = tk.Frame(self.arquivo_frame)
         srt_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        tk.Label(srt_frame, text="Transcrição (SRT) - apenas para análise dos cortes:").pack(anchor=tk.W)
+        tk.Label(srt_frame, text="Transcrição (SRT):").pack(anchor=tk.W)
         
         srt_input_frame = tk.Frame(srt_frame)
         srt_input_frame.pack(fill=tk.X, pady=(2, 0))
@@ -566,8 +598,8 @@ class App:
                 video_path, legenda_path, titulo = baixar_video_youtube(url, PASTA_VIDEOS)
                 self.logar(f"✅ Vídeo baixado: {titulo}")
 
-                # Limpeza do SRT após o download (apenas para análise)
-                self.logar("🧹 Limpando sobreposições na legenda para análise...")
+                # NOVO: Limpeza do SRT após o download
+                self.logar("🧹 Limpando sobreposições na legenda baixada...")
                 if limpar_arquivo_srt(legenda_path, margem_segundos=0.05):
                     self.logar("✅ Legenda limpa com sucesso.")
                 else:
@@ -581,8 +613,8 @@ class App:
                 self.logar(f"   Vídeo: {os.path.basename(video_path)}")
                 self.logar(f"   Transcrição: {os.path.basename(legenda_path)}")
 
-                # Limpeza do SRT para arquivos locais também (apenas para análise)
-                self.logar("🧹 Limpando sobreposições na legenda para análise...")
+                # NOVO: Limpeza do SRT para arquivos locais também (benefício extra)
+                self.logar("🧹 Limpando sobreposições na legenda selecionada...")
                 if limpar_arquivo_srt(legenda_path, margem_segundos=0.05):
                     self.logar("✅ Legenda limpa com sucesso.")
                 else:
@@ -613,7 +645,7 @@ class App:
                     self.logar("⚠️ Poucos cortes detectados.")
                     return
 
-            self.logar(f"✂️ Cortando vídeo em {len(cortes)-1} partes (sem legendas anexadas)...")
+            self.logar(f"✂️ Cortando vídeo em {len(cortes)-1} partes...")
             
             # Mostrar os cortes que serão aplicados
             for i in range(len(cortes)-1):
@@ -633,11 +665,10 @@ class App:
             if not os.path.exists(PASTA_CORTES):
                 os.makedirs(PASTA_CORTES)
             
-            # Executar os cortes (SEM legendas anexadas)
-            cortar_video(video_path, cortes, PASTA_CORTES, descricoes)
+            # Executar os cortes
+            cortar_video(video_path, cortes, legenda_path, PASTA_CORTES, descricoes)
             self.logar("✅ Processamento finalizado com sucesso!")
             self.logar(f"📁 Os cortes foram salvos em: {PASTA_CORTES}")
-            self.logar("ℹ️ Os vídeos foram cortados baseados na análise das transcrições, mas sem legendas anexadas.")
             
         except Exception as e:
             self.logar(f"❌ Erro durante o processamento: {e}")
@@ -649,3 +680,4 @@ if __name__ == '__main__':
     root = tk.Tk()
     app = App(root)
     root.mainloop()
+    
